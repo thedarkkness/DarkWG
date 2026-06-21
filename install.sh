@@ -37,7 +37,7 @@ if [[ -z "${DARKWG_ENDPOINT:-}" ]]; then
   fi
 fi
 
-echo "==> 1/8: устанавливаю системные зависимости"
+echo "==> 1/9: устанавливаю системные зависимости"
 apt-get update -qq
 apt-get install -y -qq \
   software-properties-common python3-launchpadlib gnupg2 \
@@ -45,7 +45,7 @@ apt-get install -y -qq \
   python3-venv python3-pip \
   qrencode wireguard-tools ufw
 
-echo "==> 2/8: ставлю тоннельный модуль и инструменты ядра"
+echo "==> 2/9: ставлю тоннельный модуль и инструменты ядра"
 if ! grep -rq "amnezia/ppa" /etc/apt/sources.list.d/ 2>/dev/null; then
   add-apt-repository -y ppa:amnezia/ppa
   apt-get update -qq
@@ -62,15 +62,27 @@ if ! lsmod | grep -q amneziawg; then
   }
 fi
 
-echo "==> 3/8: создаю свои имена команд (darkwg, darkwg-quick)"
+echo "==> 3/9: создаю свои имена команд (darkwg, darkwg-quick)"
 ln -sf "$(command -v awg)" /usr/local/bin/darkwg
 ln -sf "$(command -v awg-quick)" /usr/local/bin/darkwg-quick
 
-echo "==> 4/8: определяю сетевой интерфейс для NAT"
+echo "==> 4/9: определяю сетевой интерфейс для NAT"
 EGRESS_IFACE="$(ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if ($i=="dev") print $(i+1)}')"
 echo "    интерфейс выхода в интернет: ${EGRESS_IFACE}"
 
-echo "==> 5/8: генерирую ключи и обфускационные параметры"
+echo "==> 5/9: проверяю, что net.ipv4.ip_forward включён постоянно"
+SYSCTL_FILE="/etc/sysctl.d/99-darkwg.conf"
+CURRENT_FORWARD="$(sysctl -n net.ipv4.ip_forward)"
+PERSISTED="$(grep -rhs '^net.ipv4.ip_forward' /etc/sysctl.conf /etc/sysctl.d/*.conf 2>/dev/null | tail -n1)"
+if [[ "${CURRENT_FORWARD}" != "1" || "${PERSISTED}" != "net.ipv4.ip_forward=1" ]]; then
+  echo "net.ipv4.ip_forward=1" > "${SYSCTL_FILE}"
+  sysctl -p "${SYSCTL_FILE}" > /dev/null
+  echo "    было выключено или не закреплено постоянно — включил и сохранил в ${SYSCTL_FILE}"
+else
+  echo "    уже включено и закреплено постоянно — пропускаю"
+fi
+
+echo "==> 6/9: генерирую ключи и обфускационные параметры"
 mkdir -p "${CONFIG_DIR}" "${PEERS_DIR}"
 chmod 700 "${CONFIG_DIR}"
 umask 077
@@ -90,7 +102,7 @@ H4=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['H4'])" "${PARAM
 SERVER_PRIVATE_KEY="$(cat "${CONFIG_DIR}/server_private.key")"
 SERVER_PUBLIC_KEY="$(cat "${CONFIG_DIR}/server_public.key")"
 
-echo "==> 6/8: пишу ${CONFIG_DIR}/${IFACE}.conf и поднимаю интерфейс"
+echo "==> 7/9: пишу ${CONFIG_DIR}/${IFACE}.conf и поднимаю интерфейс"
 cat > "${CONFIG_DIR}/${IFACE}.conf" << EOF
 [Interface]
 PrivateKey = ${SERVER_PRIVATE_KEY}
@@ -115,7 +127,7 @@ systemctl daemon-reload
 systemctl enable --now "darkwg-quick@${IFACE}"
 ufw allow "${PORT}/udp" || true
 
-echo "==> 7/8: разворачиваю API и создаю первого пира"
+echo "==> 8/9: разворачиваю API и создаю первого пира"
 mkdir -p "${INSTALL_DIR}"
 cp -r "${REPO_DIR}/api" "${REPO_DIR}/scripts" "${INSTALL_DIR}/"
 python3 -m venv "${INSTALL_DIR}/venv"
@@ -154,7 +166,7 @@ sed -i "s#__API_PORT__#${API_PORT}#g" /etc/systemd/system/darkwg-api.service
 systemctl daemon-reload
 systemctl enable --now darkwg-api
 
-echo "==> 8/8: готово"
+echo "==> 9/9: готово"
 echo ""
 echo "===================================================================="
 echo "  DarkWG установлен."
