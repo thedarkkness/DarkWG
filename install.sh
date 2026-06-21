@@ -25,7 +25,16 @@ SERVER_IP="10.13.0.1"
 API_PORT="${DARKWG_API_PORT:-8765}"
 
 if [[ -z "${DARKWG_ENDPOINT:-}" ]]; then
-  read -rp "Публичный домен или IP этого сервера: " DARKWG_ENDPOINT
+  echo ""
+  echo "Нужен публичный IP-адрес или домен этого сервера — именно по нему"
+  echo "будут подключаться клиенты."
+  DETECTED_IP="$(curl -s --max-time 3 -4 ifconfig.me || true)"
+  if [[ -n "${DETECTED_IP}" ]]; then
+    read -rp "IP или домен сервера [по умолчанию: ${DETECTED_IP}, просто нажми Enter]: " DARKWG_ENDPOINT
+    DARKWG_ENDPOINT="${DARKWG_ENDPOINT:-${DETECTED_IP}}"
+  else
+    read -rp "IP-адрес или домен сервера: " DARKWG_ENDPOINT
+  fi
 fi
 
 echo "==> 1/8: устанавливаю системные зависимости"
