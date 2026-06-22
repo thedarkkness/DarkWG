@@ -41,7 +41,7 @@ trap 'on_error ${LINENO}' ERR
 
 REPO_URL="https://github.com/thedarkkness/DarkWG.git"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.0.3"
 SCRIPT_AUTHOR="thedarkkness"
 
 # Если рядом со скриптом нет остальных файлов репозитория (Dockerfile и т.п.) —
@@ -70,10 +70,24 @@ print_banner() {
   echo ""
 }
 
+version_gt() {
+  # true, только если $1 строго больше $2 по семантике X.Y.Z
+  [[ "$1" == "$2" ]] && return 1
+  local v1 v2 i
+  IFS='.' read -ra v1 <<< "$1"
+  IFS='.' read -ra v2 <<< "$2"
+  for ((i = 0; i < ${#v1[@]} || i < ${#v2[@]}; i++)); do
+    local a="${v1[i]:-0}" b="${v2[i]:-0}"
+    if ((10#${a:-0} > 10#${b:-0})); then return 0; fi
+    if ((10#${a:-0} < 10#${b:-0})); then return 1; fi
+  done
+  return 1
+}
+
 check_for_updates() {
   local remote_version
   remote_version="$(curl -s --max-time 3 "https://raw.githubusercontent.com/thedarkkness/DarkWG/main/VERSION" 2>/dev/null | tr -d '[:space:]')"
-  if [[ -z "${remote_version}" || "${remote_version}" == "${SCRIPT_VERSION}" ]]; then
+  if [[ -z "${remote_version}" ]] || ! version_gt "${remote_version}" "${SCRIPT_VERSION}"; then
     return 0
   fi
   warn "Доступна новая версия скрипта: ${remote_version} (у тебя ${SCRIPT_VERSION})"
