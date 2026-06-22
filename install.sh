@@ -41,7 +41,7 @@ trap 'on_error ${LINENO}' ERR
 
 REPO_URL="https://github.com/thedarkkness/DarkWG.git"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPT_VERSION="1.0.2"
+SCRIPT_VERSION="1.1.0"
 SCRIPT_AUTHOR="thedarkkness"
 
 # Если рядом со скриптом нет остальных файлов репозитория (Dockerfile и т.п.) —
@@ -380,10 +380,17 @@ JMIN=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['Jmin'])" "${P
 JMAX=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['Jmax'])" "${PARAMS_JSON}")
 S1=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['S1'])" "${PARAMS_JSON}")
 S2=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['S2'])" "${PARAMS_JSON}")
+S3=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['S3'])" "${PARAMS_JSON}")
+S4=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['S4'])" "${PARAMS_JSON}")
 H1=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['H1'])" "${PARAMS_JSON}")
 H2=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['H2'])" "${PARAMS_JSON}")
 H3=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['H3'])" "${PARAMS_JSON}")
 H4=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['H4'])" "${PARAMS_JSON}")
+I1=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['I1'])" "${PARAMS_JSON}")
+I2=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['I2'])" "${PARAMS_JSON}")
+I3=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['I3'])" "${PARAMS_JSON}")
+I4=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['I4'])" "${PARAMS_JSON}")
+I5=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['I5'])" "${PARAMS_JSON}")
 
 SERVER_PRIVATE_KEY="$(cat "${CONFIG_DIR}/server_private.key")"
 SERVER_PUBLIC_KEY="$(cat "${CONFIG_DIR}/server_public.key")"
@@ -398,10 +405,17 @@ Jmin = ${JMIN}
 Jmax = ${JMAX}
 S1 = ${S1}
 S2 = ${S2}
+S3 = ${S3}
+S4 = ${S4}
 H1 = ${H1}
 H2 = ${H2}
 H3 = ${H3}
 H4 = ${H4}
+I1 = ${I1}
+I2 = ${I2}
+I3 = ${I3}
+I4 = ${I4}
+I5 = ${I5}
 PostUp = iptables -A FORWARD -i ${IFACE} -j ACCEPT; iptables -t nat -A POSTROUTING -o ${EGRESS_IFACE} -j MASQUERADE
 PostDown = iptables -D FORWARD -i ${IFACE} -j ACCEPT; iptables -t nat -D POSTROUTING -o ${EGRESS_IFACE} -j MASQUERADE
 EOF
@@ -426,10 +440,17 @@ DARKWG_JMIN=${JMIN}
 DARKWG_JMAX=${JMAX}
 DARKWG_S1=${S1}
 DARKWG_S2=${S2}
+DARKWG_S3=${S3}
+DARKWG_S4=${S4}
 DARKWG_H1=${H1}
 DARKWG_H2=${H2}
 DARKWG_H3=${H3}
 DARKWG_H4=${H4}
+DARKWG_I1=${I1}
+DARKWG_I2=${I2}
+DARKWG_I3=${I3}
+DARKWG_I4=${I4}
+DARKWG_I5=${I5}
 EOF
 chmod 600 "${CONFIG_DIR}/api.env"
 

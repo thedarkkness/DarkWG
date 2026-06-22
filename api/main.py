@@ -41,10 +41,17 @@ OBFUSCATION = ObfuscationParams(
     Jmax=int(os.environ["DARKWG_JMAX"]),
     S1=int(os.environ["DARKWG_S1"]),
     S2=int(os.environ["DARKWG_S2"]),
+    S3=int(os.environ["DARKWG_S3"]),
+    S4=int(os.environ["DARKWG_S4"]),
     H1=int(os.environ["DARKWG_H1"]),
     H2=int(os.environ["DARKWG_H2"]),
     H3=int(os.environ["DARKWG_H3"]),
     H4=int(os.environ["DARKWG_H4"]),
+    I1=os.environ["DARKWG_I1"],
+    I2=os.environ["DARKWG_I2"],
+    I3=os.environ["DARKWG_I3"],
+    I4=os.environ["DARKWG_I4"],
+    I5=os.environ["DARKWG_I5"],
 )
 
 store = PeerStore(DB_PATH)
