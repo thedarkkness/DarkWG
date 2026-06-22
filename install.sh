@@ -16,6 +16,29 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+ok()   { echo -e "${GREEN}✓${NC} $1"; }
+warn() { echo -e "${YELLOW}!${NC} $1"; }
+fail() { echo -e "${RED}✗ ОШИБКА${NC}: $1" >&2; }
+step() { echo -e "${CYAN}==> $1${NC}"; }
+
+on_error() {
+  local exit_code=$?
+  local line_no=$1
+  echo "" >&2
+  fail "что-то пошло не так на строке ${line_no} (код выхода ${exit_code})."
+  echo "Для пошагового подробного вывода перезапусти так:" >&2
+  echo "  bash -x ./install.sh" >&2
+  exit "${exit_code}"
+}
+trap 'on_error ${LINENO}' ERR
+
+
 REPO_URL="https://github.com/thedarkkness/DarkWG.git"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -177,7 +200,7 @@ PORT="${DARKWG_PORT}"
 # ----------------------------------------------------------------------------
 # Шаг 1: системные зависимости (без python3-venv/pip — API теперь в контейнере)
 # ----------------------------------------------------------------------------
-echo "==> 1/8: устанавливаю системные зависимости"
+step "1/8: устанавливаю системные зависимости"
 apt-get update -qq
 apt-get install -y -qq \
   software-properties-common python3-launchpadlib gnupg2 \
@@ -190,7 +213,7 @@ if ! command -v docker &>/dev/null; then
   systemctl enable --now docker
 fi
 
-echo "==> 2/8: ставлю тоннельный модуль и инструменты ядра"
+step "2/8: ставлю тоннельный модуль и инструменты ядра"
 if ! grep -rq "amnezia/ppa" /etc/apt/sources.list.d/ 2>/dev/null; then
   add-apt-repository -y ppa:amnezia/ppa
   apt-get update -qq
@@ -199,7 +222,7 @@ apt-get install -y -qq amneziawg amneziawg-tools
 
 if ! lsmod | grep -q amneziawg; then
   modprobe amneziawg || {
-    echo "ВНИМАНИЕ: модуль не загрузился через modprobe." >&2
+    fail "модуль не загрузился через modprobe."
     echo "Частая причина — DKMS не нашёл sources текущего ядра. Попробуй:" >&2
     echo "  ln -s /usr/src/linux-headers-\$(uname -r) /var/lib/dkms/amneziawg/1.0.0/build/kernel" >&2
     echo "  dpkg --configure -a" >&2
@@ -208,22 +231,22 @@ if ! lsmod | grep -q amneziawg; then
 fi
 
 if ! AWG_BIN_PATH="$(command -v awg)"; then
-  echo "ОШИБКА: бинарь 'awg' не найден после установки amneziawg-tools." >&2
+  fail "бинарь 'awg' не найден после установки amneziawg-tools."
   echo "Проверь: dpkg -l | grep amneziawg" >&2
   exit 1
 fi
 if ! AWG_QUICK_BIN_PATH="$(command -v awg-quick)"; then
-  echo "ОШИБКА: бинарь 'awg-quick' не найден после установки amneziawg-tools." >&2
+  fail "бинарь 'awg-quick' не найден после установки amneziawg-tools."
   exit 1
 fi
 ln -sf "${AWG_BIN_PATH}" /usr/local/bin/darkwg
 ln -sf "${AWG_QUICK_BIN_PATH}" /usr/local/bin/darkwg-quick
 
-echo "==> 3/8: определяю сетевой интерфейс для NAT"
+step "3/8: определяю сетевой интерфейс для NAT"
 EGRESS_IFACE="$(ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if ($i=="dev") print $(i+1)}')"
 echo "    интерфейс выхода в интернет: ${EGRESS_IFACE}"
 
-echo "==> 4/8: проверяю, что net.ipv4.ip_forward включён постоянно"
+step "4/8: проверяю, что net.ipv4.ip_forward включён постоянно"
 SYSCTL_FILE="/etc/sysctl.d/99-darkwg.conf"
 CURRENT_FORWARD="$(sysctl -n net.ipv4.ip_forward)"
 PERSISTED="$(grep -rhs '^net.ipv4.ip_forward' /etc/sysctl.conf /etc/sysctl.d/*.conf 2>/dev/null | tail -n1 || true)"
@@ -235,7 +258,7 @@ else
   echo "    уже включено и закреплено постоянно — пропускаю"
 fi
 
-echo "==> 5/8: генерирую ключи, обфускационные параметры и конфиг туннеля"
+step "5/8: генерирую ключи, обфускационные параметры и конфиг туннеля"
 mkdir -p "${CONFIG_DIR}" "${PEERS_DIR}"
 chmod 700 "${CONFIG_DIR}"
 umask 077
@@ -275,7 +298,7 @@ EOF
 chmod 600 "${CONFIG_DIR}/${IFACE}.conf"
 ufw allow "${PORT}/udp" || true
 
-echo "==> 6/8: пишу api.env и docker-compose.yml"
+step "6/8: пишу api.env и docker-compose.yml"
 API_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 cat > "${CONFIG_DIR}/api.env" << EOF
 DARKWG_IFACE=${IFACE}
@@ -311,7 +334,7 @@ touch "${REPO_DIR}/nginx/darkwg-api.conf"  # пустышка, чтобы volume
 API_PUBLIC_URL=""
 COMPOSE_PROFILE_ARGS=()
 if [[ "${DARKWG_MODE}" == "2" ]]; then
-  echo "==> 7/8: настраиваю внешний HTTPS-доступ к API (режим 2, HTTP-01/standalone)"
+  step "7/8: настраиваю внешний HTTPS-доступ к API (режим 2, HTTP-01/standalone)"
 
   CERT_PATH="/etc/letsencrypt/live/${DARKWG_API_DOMAIN}/fullchain.pem"
   CERT_OK=false
@@ -346,12 +369,12 @@ if [[ "${DARKWG_MODE}" == "2" ]]; then
         CERTBOT_EXIT=$?
         set -e
         docker start "${BLOCKER_CONTAINER}" > /dev/null
-        [[ "${CERTBOT_EXIT}" -eq 0 ]] || { echo "ОШИБКА: выпуск сертификата не удался." >&2; exit 1; }
+        [[ "${CERTBOT_EXIT}" -eq 0 ]] || { fail "выпуск сертификата не удался."; exit 1; }
         echo "    pre-hook/post-hook сохранены certbot'ом в конфиг продления —"
         echo "    при автообновлении (certbot.timer) контейнер так же будет"
         echo "    сам останавливаться и подниматься обратно, без твоего участия"
       else
-        echo "ОШИБКА: порт 80 занят неизвестным процессом (не похоже на Docker-контейнер)." >&2
+        fail "порт 80 занят неизвестным процессом (не похоже на Docker-контейнер)."
         echo "Освободи порт 80 вручную и перезапусти скрипт, либо выпусти" >&2
         echo "сертификат для ${DARKWG_API_DOMAIN} самостоятельно и положи его" >&2
         echo "в ${CERT_PATH} перед повторным запуском." >&2
@@ -381,33 +404,56 @@ if [[ "${DARKWG_MODE}" == "2" ]]; then
   COMPOSE_PROFILE_ARGS=(--profile external)
   API_PUBLIC_URL="https://${DARKWG_API_DOMAIN}:${HTTPS_PORT}"
 else
-  echo "==> 7/8: режим 1 — внешний доступ к API не настраивается, всё локально"
+  step "7/8: режим 1 — внешний доступ к API не настраивается, всё локально"
 fi
 
 # ----------------------------------------------------------------------------
 # Шаг 8: поднимаю контейнеры
 # ----------------------------------------------------------------------------
-echo "==> 8/8: собираю и поднимаю контейнеры (darkwg${DARKWG_MODE:+, darkwg-nginx при режиме 2})"
+if [[ "${DARKWG_MODE}" == "2" ]]; then
+  step "8/8: собираю и поднимаю контейнеры (darkwg, darkwg-nginx)"
+else
+  step "8/8: собираю и поднимаю контейнер darkwg"
+fi
 cd "${REPO_DIR}"
 docker compose -f docker-compose.generated.yml "${COMPOSE_PROFILE_ARGS[@]}" build darkwg
 docker compose -f docker-compose.generated.yml "${COMPOSE_PROFILE_ARGS[@]}" up -d
+ok "Образ собран, контейнеры запущены"
 
 echo "    жду готовности API..."
+API_READY=false
 for _ in $(seq 1 30); do
   if curl -sf "http://127.0.0.1:8765/health" > /dev/null 2>&1; then
+    API_READY=true
     break
   fi
   sleep 1
 done
 
+if [[ "${API_READY}" != "true" ]]; then
+  echo "" >&2
+  fail "API не ответила за 30 секунд — контейнер darkwg не поднялся как надо."
+  echo "" >&2
+  echo "Последние строки логов контейнера:" >&2
+  echo "----------------------------------------" >&2
+  docker compose -f docker-compose.generated.yml logs darkwg --tail 30 2>&1 | tail -30 >&2 || true
+  echo "----------------------------------------" >&2
+  echo "" >&2
+  echo "Полные логи:" >&2
+  echo "  docker compose -f ${REPO_DIR}/docker-compose.generated.yml logs darkwg" >&2
+  exit 1
+fi
+ok "API отвечает"
+
 echo "    создаю первого пира"
 docker compose -f docker-compose.generated.yml exec -T darkwg \
   python3 scripts/darkwg_cli.py add-peer --telegram-user-id 0 --ttl-days 0 \
   --out "${PEERS_DIR}/peer1"
+ok "Первый пир создан"
 
 echo ""
-echo "===================================================================="
-echo "  DarkWG установлен (Docker: darkwg$( [[ "${DARKWG_MODE}" == "2" ]] && echo ", darkwg-nginx" ))."
+echo -e "${GREEN}====================================================================${NC}"
+echo -e "${GREEN}  DarkWG установлен.${NC}"
 echo "  Туннель:        ${IFACE}, порт ${PORT}/udp, подсеть ${SUBNET}"
 echo "  Публичный ключ:  ${SERVER_PUBLIC_KEY}"
 if [[ -n "${API_PUBLIC_URL}" ]]; then
@@ -433,4 +479,4 @@ if [[ -n "${API_PUBLIC_URL}" ]]; then
 else
   echo "  Проверка API: curl -s -H \"X-API-Key: ${API_KEY}\" http://127.0.0.1:8765/health"
 fi
-echo "===================================================================="
+echo -e "${GREEN}====================================================================${NC}"
