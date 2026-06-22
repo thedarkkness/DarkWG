@@ -47,12 +47,13 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # полного git clone. В этом случае клонируем репозиторий во временную папку
 # и перезапускаем install.sh уже оттуда, где все нужные файлы рядом.
 if [[ ! -f "${REPO_DIR}/docker/Dockerfile" ]]; then
-  echo "Скрипт запущен напрямую — клонирую полный репозиторий во временную папку..."
   command -v git &>/dev/null || { apt-get update -qq && apt-get install -y -qq git; }
   TMP_CLONE_DIR="$(mktemp -d)"
-  git clone --quiet "${REPO_URL}" "${TMP_CLONE_DIR}"
+  git clone --quiet "${REPO_URL}" "${TMP_CLONE_DIR}" &>/dev/null
   exec bash "${TMP_CLONE_DIR}/install.sh" "$@"
 fi
+
+clear
 
 CONFIG_DIR="/etc/darkwg"
 PEERS_DIR="${CONFIG_DIR}/peers"
@@ -89,11 +90,12 @@ else
     case "${step}" in
       mode)
         echo ""
-        echo "Как ставим?"
-        echo "  1) Всё на этом сервере — туннель и управление (бот/API) в одном месте"
-        echo "  2) Эта нода отдельно от сервера управления — нужен внешний HTTPS-доступ"
-        echo "     к API для бота/панели, которые работают на другом сервере"
-        echo "  0) Выход"
+        echo "Выбор метода установки:"
+        echo ""
+        echo "  1. Панель + нода (туннель и API в одном месте, бот можно подключать локально)"
+        echo "  2. Только нода (без панели — управление с отдельного сервера по HTTPS)"
+        echo "  0. Выход"
+        echo ""
         read -rp "Выбери [1/2/0]: " ans
         case "${ans}" in
           1) DARKWG_MODE="1"; step="endpoint" ;;
@@ -200,6 +202,13 @@ PORT="${DARKWG_PORT}"
 # ----------------------------------------------------------------------------
 # Шаг 1: системные зависимости (без python3-venv/pip — API теперь в контейнере)
 # ----------------------------------------------------------------------------
+AVAILABLE_MB="$(free -m | awk '/^Mem:/{print $7}')"
+if [[ -n "${AVAILABLE_MB}" ]] && (( AVAILABLE_MB < 400 )); then
+  warn "свободной памяти всего ${AVAILABLE_MB} МБ — если на сервере уже"
+  warn "крутится что-то тяжёлое (база данных, другие контейнеры), сборка"
+  warn "образа и работа контейнера darkwg могут падать из-за нехватки RAM."
+fi
+
 step "1/8: устанавливаю системные зависимости"
 apt-get update -qq
 apt-get install -y -qq \
@@ -439,25 +448,49 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 
-if [[ "${API_READY}" != "true" ]]; then
+show_container_diagnostics() {
   echo "" >&2
-  fail "API не ответила за 30 секунд — контейнер darkwg не поднялся как надо."
+  echo "Последние строки логов контейнера darkwg:" >&2
+  echo "----------------------------------------" >&2
+  docker compose -f docker-compose.generated.yml logs darkwg --tail 40 2>&1 | tail -40 >&2 || true
+  echo "----------------------------------------" >&2
   echo "" >&2
-  echo "Последние строки логов контейнера:" >&2
-  echo "----------------------------------------" >&2
-  docker compose -f docker-compose.generated.yml logs darkwg --tail 30 2>&1 | tail -30 >&2 || true
-  echo "----------------------------------------" >&2
+  echo "Память на сервере (мало свободной — частая причина перезапуска контейнера):" >&2
+  free -h >&2 || true
+  echo "" >&2
+  echo "Статус контейнера:" >&2
+  docker ps -a --filter "name=darkwg" --format 'table {{.Names}}\t{{.Status}}' >&2 || true
   echo "" >&2
   echo "Полные логи:" >&2
   echo "  docker compose -f ${REPO_DIR}/docker-compose.generated.yml logs darkwg" >&2
+}
+
+if [[ "${API_READY}" != "true" ]]; then
+  echo "" >&2
+  fail "API не ответила за 30 секунд — контейнер darkwg не поднялся как надо."
+  show_container_diagnostics
   exit 1
 fi
 ok "API отвечает"
 
 echo "    создаю первого пира"
-docker compose -f docker-compose.generated.yml exec -T darkwg \
-  python3 scripts/darkwg_cli.py add-peer --telegram-user-id 0 --ttl-days 0 \
-  --out "${PEERS_DIR}/peer1"
+PEER_CREATED=false
+for attempt in 1 2 3; do
+  if docker compose -f docker-compose.generated.yml exec -T darkwg \
+    python3 scripts/darkwg_cli.py add-peer --telegram-user-id 0 --ttl-days 0 \
+    --out "${PEERS_DIR}/peer1"; then
+    PEER_CREATED=true
+    break
+  fi
+  warn "попытка ${attempt}/3 не удалась, контейнер мог перезапуститься — жду 5 секунд и пробую снова"
+  sleep 5
+done
+
+if [[ "${PEER_CREATED}" != "true" ]]; then
+  fail "не удалось создать первого пира после 3 попыток — контейнер darkwg нестабилен."
+  show_container_diagnostics
+  exit 1
+fi
 ok "Первый пир создан"
 
 echo ""
