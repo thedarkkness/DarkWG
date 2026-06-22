@@ -5,3 +5,5 @@ __pycache__/
 api.env 
 *.key 
 peers/ 
+docker-compose.generated.yml 
+nginx/darkwg-api.conf 
