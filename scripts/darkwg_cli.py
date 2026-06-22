@@ -37,7 +37,7 @@ SERVER_PUBLIC_KEY = os.environ["DARKWG_SERVER_PUBLIC_KEY"]
 ENDPOINT_HOST = os.environ["DARKWG_ENDPOINT_HOST"]
 ENDPOINT_PORT = int(os.environ.get("DARKWG_ENDPOINT_PORT", "28741"))
 CLIENT_DNS = os.environ.get("DARKWG_CLIENT_DNS", "1.1.1.1")
-DB_PATH = os.environ.get("DARKWG_DB_PATH", "/opt/darkwg/darkwg.db")
+DB_PATH = os.environ.get("DARKWG_DB_PATH", "/opt/darkwg/data/darkwg.db")
 
 OBFUSCATION = ObfuscationParams(
     Jc=int(os.environ["DARKWG_JC"]),

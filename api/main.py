@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -31,7 +32,7 @@ SERVER_PUBLIC_KEY = os.environ["DARKWG_SERVER_PUBLIC_KEY"]
 ENDPOINT_HOST = os.environ["DARKWG_ENDPOINT_HOST"]
 ENDPOINT_PORT = int(os.environ.get("DARKWG_ENDPOINT_PORT", "28741"))
 CLIENT_DNS = os.environ.get("DARKWG_CLIENT_DNS", "1.1.1.1")
-DB_PATH = os.environ.get("DARKWG_DB_PATH", "/opt/darkwg/darkwg.db")
+DB_PATH = os.environ.get("DARKWG_DB_PATH", "/opt/darkwg/data/darkwg.db")
 API_KEY = os.environ["DARKWG_API_KEY"]
 
 OBFUSCATION = ObfuscationParams(
@@ -49,6 +50,28 @@ OBFUSCATION = ObfuscationParams(
 store = PeerStore(DB_PATH)
 app = FastAPI(title="DarkWG API", version="1.0.0")
 
+EXPIRY_CHECK_INTERVAL_SECONDS = 300  # раз в 5 минут
+
+
+async def _expiry_sweep_loop() -> None:
+    while True:
+        now = datetime.now(timezone.utc)
+        for peer in store.list_all():
+            if not peer.is_active or not peer.expires_at:
+                continue
+            if datetime.fromisoformat(peer.expires_at) <= now:
+                try:
+                    wireguard.remove_peer(IFACE, peer.public_key)
+                except wireguard.WireGuardError:
+                    pass
+                store.set_active(peer.id, False)
+        await asyncio.sleep(EXPIRY_CHECK_INTERVAL_SECONDS)
+
+
+@app.on_event("startup")
+async def _start_expiry_sweep() -> None:
+    asyncio.create_task(_expiry_sweep_loop())
+
 
 def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
     if x_api_key is None or not secrets.compare_digest(x_api_key, API_KEY):
@@ -58,6 +81,10 @@ def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
 class CreatePeerRequest(BaseModel):
     telegram_user_id: int
     ttl_days: int | None = None  # None = бессрочно (например, на пробный период)
+
+
+class ExtendPeerRequest(BaseModel):
+    add_days: int
 
 
 class PeerResponse(BaseModel):
@@ -175,6 +202,26 @@ def enable_peer(peer_id: int) -> dict:
     wireguard.add_peer(IFACE, peer.public_key, peer.ip_address)
     store.set_active(peer_id, True)
     return {"enabled": peer_id}
+
+
+@app.post("/peers/{peer_id}/extend", response_model=PeerResponse, dependencies=[Depends(require_api_key)])
+def extend_peer(peer_id: int, body: ExtendPeerRequest) -> PeerResponse:
+    peer = store.get(peer_id)
+    if peer is None:
+        raise HTTPException(status_code=404, detail="peer not found")
+
+    now = datetime.now(timezone.utc)
+    current_expiry = datetime.fromisoformat(peer.expires_at) if peer.expires_at else now
+    base = max(current_expiry, now)  # если подписка уже истекла — считаем от текущего момента,
+                                      # если ещё активна — продлеваем от старой даты, не теряя остаток
+    new_expiry = (base + timedelta(days=body.add_days)).isoformat()
+    store.extend_expiry(peer_id, new_expiry)
+
+    if not peer.is_active:
+        wireguard.add_peer(IFACE, peer.public_key, peer.ip_address)
+        store.set_active(peer_id, True)
+
+    return _peer_to_response(store.get(peer_id), include_config=True)
 
 
 @app.get("/stats", dependencies=[Depends(require_api_key)])

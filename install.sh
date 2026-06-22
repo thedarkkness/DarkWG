@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 # DarkWG installer — поднимает VPN-туннель с обфускацией + REST API
-# для управления пирами. Тестировалось на Ubuntu 24.04 (noble).
+# в отдельных Docker-контейнерах (darkwg, darkwg-nginx), полностью
+# независимо от любой другой инфраструктуры на сервере (RemnaWave и т.п.).
+# Тестировалось на Ubuntu 24.04 (noble).
 #
 # Использование:
-#   sudo DARKWG_ENDPOINT=<домен_или_IP> bash install.sh
-#   (либо просто sudo bash install.sh — спросит домен интерактивно)
+#   sudo ./install.sh
 
 set -euo pipefail
 
 if [[ "${EUID}" -ne 0 ]]; then
-  echo "Запускать нужно от root (sudo bash install.sh)" >&2
+  echo "Запускать нужно от root (sudo ./install.sh)" >&2
   exit 1
 fi
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INSTALL_DIR="/opt/darkwg"
 CONFIG_DIR="/etc/darkwg"
 PEERS_DIR="${CONFIG_DIR}/peers"
 IFACE="darkwg0"
@@ -22,12 +22,28 @@ IFACE="darkwg0"
 PORT="${DARKWG_PORT:-$(shuf -i 20000-60000 -n 1)}"
 SUBNET="${DARKWG_SUBNET:-10.13.0.0/16}"
 SERVER_IP="10.13.0.1"
-API_PORT="${DARKWG_API_PORT:-8765}"
+
+port_in_use() {
+  ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":${1}$"
+}
+
+# ----------------------------------------------------------------------------
+# Шаг 0: режим установки и вопросы
+# ----------------------------------------------------------------------------
+echo ""
+echo "Как ставим?"
+echo "  1) Всё на этом сервере — туннель и управление (бот/API) в одном месте"
+echo "  2) Эта нода отдельно от сервера управления — нужен внешний HTTPS-доступ"
+echo "     к API для бота/панели, которые работают на другом сервере"
+echo ""
+if [[ -z "${DARKWG_MODE:-}" ]]; then
+  read -rp "Выбери 1 или 2: " DARKWG_MODE
+fi
 
 if [[ -z "${DARKWG_ENDPOINT:-}" ]]; then
   echo ""
   echo "Нужен публичный IP-адрес или домен этого сервера — именно по нему"
-  echo "будут подключаться клиенты."
+  echo "будут подключаться клиенты тоннеля."
   DETECTED_IP="$(curl -s --max-time 3 -4 ifconfig.me || true)"
   if [[ -n "${DETECTED_IP}" ]]; then
     read -rp "IP или домен сервера [по умолчанию: ${DETECTED_IP}, просто нажми Enter]: " DARKWG_ENDPOINT
@@ -37,15 +53,38 @@ if [[ -z "${DARKWG_ENDPOINT:-}" ]]; then
   fi
 fi
 
-echo "==> 1/9: устанавливаю системные зависимости"
+if [[ "${DARKWG_MODE}" == "2" ]]; then
+  echo ""
+  echo "Режим 2: нужен домен для API этой ноды и IP сервера управления"
+  echo "(бота/панели) — доступ к API будет ограничен только этим IP."
+  if [[ -z "${DARKWG_API_DOMAIN:-}" ]]; then
+    read -rp "Домен для API этой ноды (например, darkwg-api.example.com): " DARKWG_API_DOMAIN
+  fi
+  if [[ -z "${DARKWG_CONTROL_IP:-}" ]]; then
+    read -rp "IP сервера управления (бота/панели): " DARKWG_CONTROL_IP
+  fi
+  if [[ -z "${DARKWG_ACME_EMAIL:-}" ]]; then
+    read -rp "Email для уведомлений Let's Encrypt (можно оставить пустым): " DARKWG_ACME_EMAIL
+  fi
+fi
+
+# ----------------------------------------------------------------------------
+# Шаг 1: системные зависимости (без python3-venv/pip — API теперь в контейнере)
+# ----------------------------------------------------------------------------
+echo "==> 1/8: устанавливаю системные зависимости"
 apt-get update -qq
 apt-get install -y -qq \
   software-properties-common python3-launchpadlib gnupg2 \
   "linux-headers-$(uname -r)" \
-  python3-venv python3-pip \
   qrencode wireguard-tools ufw
 
-echo "==> 2/9: ставлю тоннельный модуль и инструменты ядра"
+if ! command -v docker &>/dev/null; then
+  echo "    Docker не найден — ставлю из репозитория Ubuntu"
+  apt-get install -y -qq docker.io docker-compose-plugin
+  systemctl enable --now docker
+fi
+
+echo "==> 2/8: ставлю тоннельный модуль и инструменты ядра"
 if ! grep -rq "amnezia/ppa" /etc/apt/sources.list.d/ 2>/dev/null; then
   add-apt-repository -y ppa:amnezia/ppa
   apt-get update -qq
@@ -62,15 +101,16 @@ if ! lsmod | grep -q amneziawg; then
   }
 fi
 
-echo "==> 3/9: создаю свои имена команд (darkwg, darkwg-quick)"
-ln -sf "$(command -v awg)" /usr/local/bin/darkwg
-ln -sf "$(command -v awg-quick)" /usr/local/bin/darkwg-quick
+AWG_BIN_PATH="$(command -v awg)"
+AWG_QUICK_BIN_PATH="$(command -v awg-quick)"
+ln -sf "${AWG_BIN_PATH}" /usr/local/bin/darkwg
+ln -sf "${AWG_QUICK_BIN_PATH}" /usr/local/bin/darkwg-quick
 
-echo "==> 4/9: определяю сетевой интерфейс для NAT"
+echo "==> 3/8: определяю сетевой интерфейс для NAT"
 EGRESS_IFACE="$(ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if ($i=="dev") print $(i+1)}')"
 echo "    интерфейс выхода в интернет: ${EGRESS_IFACE}"
 
-echo "==> 5/9: проверяю, что net.ipv4.ip_forward включён постоянно"
+echo "==> 4/8: проверяю, что net.ipv4.ip_forward включён постоянно"
 SYSCTL_FILE="/etc/sysctl.d/99-darkwg.conf"
 CURRENT_FORWARD="$(sysctl -n net.ipv4.ip_forward)"
 PERSISTED="$(grep -rhs '^net.ipv4.ip_forward' /etc/sysctl.conf /etc/sysctl.d/*.conf 2>/dev/null | tail -n1)"
@@ -82,7 +122,7 @@ else
   echo "    уже включено и закреплено постоянно — пропускаю"
 fi
 
-echo "==> 6/9: генерирую ключи и обфускационные параметры"
+echo "==> 5/8: генерирую ключи, обфускационные параметры и конфиг туннеля"
 mkdir -p "${CONFIG_DIR}" "${PEERS_DIR}"
 chmod 700 "${CONFIG_DIR}"
 umask 077
@@ -102,7 +142,6 @@ H4=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['H4'])" "${PARAM
 SERVER_PRIVATE_KEY="$(cat "${CONFIG_DIR}/server_private.key")"
 SERVER_PUBLIC_KEY="$(cat "${CONFIG_DIR}/server_public.key")"
 
-echo "==> 7/9: пишу ${CONFIG_DIR}/${IFACE}.conf и поднимаю интерфейс"
 cat > "${CONFIG_DIR}/${IFACE}.conf" << EOF
 [Interface]
 PrivateKey = ${SERVER_PRIVATE_KEY}
@@ -121,19 +160,9 @@ PostUp = sysctl -w net.ipv4.ip_forward=1; iptables -A FORWARD -i ${IFACE} -j ACC
 PostDown = iptables -D FORWARD -i ${IFACE} -j ACCEPT; iptables -t nat -D POSTROUTING -o ${EGRESS_IFACE} -j MASQUERADE
 EOF
 chmod 600 "${CONFIG_DIR}/${IFACE}.conf"
-
-cp "${REPO_DIR}/systemd/darkwg-quick@.service" "/etc/systemd/system/darkwg-quick@.service"
-systemctl daemon-reload
-systemctl enable --now "darkwg-quick@${IFACE}"
 ufw allow "${PORT}/udp" || true
 
-echo "==> 8/9: разворачиваю API и создаю первого пира"
-mkdir -p "${INSTALL_DIR}"
-cp -r "${REPO_DIR}/api" "${REPO_DIR}/scripts" "${INSTALL_DIR}/"
-python3 -m venv "${INSTALL_DIR}/venv"
-"${INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade pip
-"${INSTALL_DIR}/venv/bin/pip" install --quiet -r "${INSTALL_DIR}/api/requirements.txt"
-
+echo "==> 6/8: пишу api.env и docker-compose.yml"
 API_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 cat > "${CONFIG_DIR}/api.env" << EOF
 DARKWG_IFACE=${IFACE}
@@ -143,7 +172,7 @@ DARKWG_SERVER_PUBLIC_KEY=${SERVER_PUBLIC_KEY}
 DARKWG_ENDPOINT_HOST=${DARKWG_ENDPOINT}
 DARKWG_ENDPOINT_PORT=${PORT}
 DARKWG_CLIENT_DNS=1.1.1.1
-DARKWG_DB_PATH=${INSTALL_DIR}/darkwg.db
+DARKWG_DB_PATH=/opt/darkwg/data/darkwg.db
 DARKWG_API_KEY=${API_KEY}
 DARKWG_JC=${JC}
 DARKWG_JMIN=${JMIN}
@@ -157,22 +186,122 @@ DARKWG_H4=${H4}
 EOF
 chmod 600 "${CONFIG_DIR}/api.env"
 
-# Первый пир по умолчанию — например, для собственного теста владельца сервера
-"${INSTALL_DIR}/venv/bin/python3" "${INSTALL_DIR}/scripts/darkwg_cli.py" \
-  add-peer --telegram-user-id 0 --ttl-days 0 --out "${PEERS_DIR}/peer1"
+sed -e "s#__AWG_BIN_PATH__#${AWG_BIN_PATH}#g" \
+    -e "s#__AWG_QUICK_BIN_PATH__#${AWG_QUICK_BIN_PATH}#g" \
+    "${REPO_DIR}/docker-compose.yml" > "${REPO_DIR}/docker-compose.generated.yml"
 
-cp "${REPO_DIR}/systemd/darkwg-api.service" /etc/systemd/system/darkwg-api.service
-sed -i "s#__API_PORT__#${API_PORT}#g" /etc/systemd/system/darkwg-api.service
-systemctl daemon-reload
-systemctl enable --now darkwg-api
+touch "${REPO_DIR}/nginx/darkwg-api.conf"  # пустышка, чтобы volume в compose был валиден даже в режиме 1
 
-echo "==> 9/9: готово"
+# ----------------------------------------------------------------------------
+# Шаг 7: внешний HTTPS-доступ к API (только режим 2) — HTTP-01 (standalone)
+# ----------------------------------------------------------------------------
+API_PUBLIC_URL=""
+COMPOSE_PROFILE_ARGS=()
+if [[ "${DARKWG_MODE}" == "2" ]]; then
+  echo "==> 7/8: настраиваю внешний HTTPS-доступ к API (режим 2, HTTP-01/standalone)"
+
+  CERT_PATH="/etc/letsencrypt/live/${DARKWG_API_DOMAIN}/fullchain.pem"
+  CERT_OK=false
+  if [[ -f "${CERT_PATH}" ]] && openssl x509 -checkend 2592000 -noout -in "${CERT_PATH}" >/dev/null 2>&1; then
+    CERT_OK=true
+    echo "    действующий сертификат для ${DARKWG_API_DOMAIN} уже есть (>30 дней) — пропускаю выпуск"
+  fi
+
+  apt-get install -y -qq certbot
+
+  if [[ "${CERT_OK}" == "false" ]]; then
+    EMAIL_ARGS="--register-unsafely-without-email"
+    [[ -n "${DARKWG_ACME_EMAIL:-}" ]] && EMAIL_ARGS="-m ${DARKWG_ACME_EMAIL}"
+
+    if port_in_use 80; then
+      echo "    порт 80 занят — определяю, какой контейнер его держит"
+      BLOCKER_CONTAINER="$(docker ps --format '{{.Names}}\t{{.Ports}}' 2>/dev/null | grep ':80->' | awk '{print $1}' | head -n1 || true)"
+      if [[ -z "${BLOCKER_CONTAINER}" ]]; then
+        # network_mode: host не показывает порты в `docker ps` явно — проверяем
+        # отдельно, не висит ли что-то известное на хосте без явного маппинга
+        BLOCKER_CONTAINER="$(docker ps --format '{{.Names}}' 2>/dev/null | grep -i nginx | head -n1 || true)"
+      fi
+      if [[ -n "${BLOCKER_CONTAINER}" ]]; then
+        echo "    порт 80 занят контейнером '${BLOCKER_CONTAINER}' — останавливаю"
+        echo "    на момент выпуска сертификата и сразу поднимаю обратно"
+        docker stop "${BLOCKER_CONTAINER}" > /dev/null
+        set +e
+        certbot certonly --standalone --non-interactive --agree-tos ${EMAIL_ARGS} \
+          -d "${DARKWG_API_DOMAIN}" \
+          --pre-hook "docker stop ${BLOCKER_CONTAINER} || true" \
+          --post-hook "docker start ${BLOCKER_CONTAINER} || true"
+        CERTBOT_EXIT=$?
+        set -e
+        docker start "${BLOCKER_CONTAINER}" > /dev/null
+        [[ "${CERTBOT_EXIT}" -eq 0 ]] || { echo "ОШИБКА: выпуск сертификата не удался." >&2; exit 1; }
+        echo "    pre-hook/post-hook сохранены certbot'ом в конфиг продления —"
+        echo "    при автообновлении (certbot.timer) контейнер так же будет"
+        echo "    сам останавливаться и подниматься обратно, без твоего участия"
+      else
+        echo "ОШИБКА: порт 80 занят неизвестным процессом (не похоже на Docker-контейнер)." >&2
+        echo "Освободи порт 80 вручную и перезапусти скрипт, либо выпусти" >&2
+        echo "сертификат для ${DARKWG_API_DOMAIN} самостоятельно и положи его" >&2
+        echo "в ${CERT_PATH} перед повторным запуском." >&2
+        exit 1
+      fi
+    else
+      certbot certonly --standalone --non-interactive --agree-tos ${EMAIL_ARGS} -d "${DARKWG_API_DOMAIN}"
+    fi
+  fi
+
+  systemctl enable --now certbot.timer
+
+  HTTPS_PORT="${DARKWG_API_HTTPS_PORT:-8443}"
+  if port_in_use "${HTTPS_PORT}"; then
+    echo "    порт ${HTTPS_PORT} занят — выбери другой"
+    read -rp "Порт для HTTPS-доступа к API [8444]: " HTTPS_PORT
+    HTTPS_PORT="${HTTPS_PORT:-8444}"
+  fi
+
+  sed -e "s#__HTTPS_PORT__#${HTTPS_PORT}#g" \
+      -e "s#__API_DOMAIN__#${DARKWG_API_DOMAIN}#g" \
+      -e "s#__CONTROL_IP__#${DARKWG_CONTROL_IP}#g" \
+      "${REPO_DIR}/nginx/darkwg-api.conf.template" > "${REPO_DIR}/nginx/darkwg-api.conf"
+
+  ufw allow from "${DARKWG_CONTROL_IP}" to any port "${HTTPS_PORT}" proto tcp || true
+
+  COMPOSE_PROFILE_ARGS=(--profile external)
+  API_PUBLIC_URL="https://${DARKWG_API_DOMAIN}:${HTTPS_PORT}"
+else
+  echo "==> 7/8: режим 1 — внешний доступ к API не настраивается, всё локально"
+fi
+
+# ----------------------------------------------------------------------------
+# Шаг 8: поднимаю контейнеры
+# ----------------------------------------------------------------------------
+echo "==> 8/8: собираю и поднимаю контейнеры (darkwg${DARKWG_MODE:+, darkwg-nginx при режиме 2})"
+cd "${REPO_DIR}"
+docker compose -f docker-compose.generated.yml "${COMPOSE_PROFILE_ARGS[@]}" build darkwg
+docker compose -f docker-compose.generated.yml "${COMPOSE_PROFILE_ARGS[@]}" up -d
+
+echo "    жду готовности API..."
+for _ in $(seq 1 30); do
+  if curl -sf "http://127.0.0.1:8765/health" > /dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+
+echo "    создаю первого пира"
+docker compose -f docker-compose.generated.yml exec -T darkwg \
+  python3 scripts/darkwg_cli.py add-peer --telegram-user-id 0 --ttl-days 0 \
+  --out "${PEERS_DIR}/peer1"
+
 echo ""
 echo "===================================================================="
-echo "  DarkWG установлен."
+echo "  DarkWG установлен (Docker: darkwg$( [[ "${DARKWG_MODE}" == "2" ]] && echo ", darkwg-nginx" ))."
 echo "  Туннель:        ${IFACE}, порт ${PORT}/udp, подсеть ${SUBNET}"
 echo "  Публичный ключ:  ${SERVER_PUBLIC_KEY}"
-echo "  API:             127.0.0.1:${API_PORT} (только локально)"
+if [[ -n "${API_PUBLIC_URL}" ]]; then
+  echo "  API снаружи:     ${API_PUBLIC_URL} (доступ только с ${DARKWG_CONTROL_IP})"
+else
+  echo "  API:             127.0.0.1:8765 (только локально)"
+fi
 echo "  API ключ:        ${API_KEY}"
 echo "  Конфиг API:      ${CONFIG_DIR}/api.env"
 echo ""
@@ -183,11 +312,12 @@ echo ""
 echo "  Посмотреть QR прямо в терминале:"
 echo "    qrencode -t ansiutf8 < ${PEERS_DIR}/peer1.conf"
 echo ""
-echo "  Посмотреть содержимое конфига:"
-echo "    cat ${PEERS_DIR}/peer1.conf"
+echo "  Управление пирами без API (внутри контейнера):"
+echo "    docker compose -f ${REPO_DIR}/docker-compose.generated.yml exec darkwg python3 scripts/darkwg_cli.py list-peers"
 echo ""
-echo "  Управление пирами без API:"
-echo "    ${INSTALL_DIR}/venv/bin/python3 ${INSTALL_DIR}/scripts/darkwg_cli.py list-peers"
-echo ""
-echo "  Проверка API: curl -s -H \"X-API-Key: ${API_KEY}\" http://127.0.0.1:${API_PORT}/health"
+if [[ -n "${API_PUBLIC_URL}" ]]; then
+  echo "  Проверка API: curl -s -H \"X-API-Key: ${API_KEY}\" ${API_PUBLIC_URL}/health"
+else
+  echo "  Проверка API: curl -s -H \"X-API-Key: ${API_KEY}\" http://127.0.0.1:8765/health"
+fi
 echo "===================================================================="

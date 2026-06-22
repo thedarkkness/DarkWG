@@ -1,0 +1,40 @@
+# Добавить как отдельный server block в существующий nginx (remnawave-nginx)
+# или как отдельный конфиг, если поднимаешь свой nginx именно для этого.
+#
+# Перед использованием:
+#   1. Заведи DNS A-запись: darkwg-api.jawsofplanet.space -> IP нидерландской ноды
+#   2. Выпусти сертификат (если используешь certbot):
+#        certbot certonly --nginx -d darkwg-api.jawsofplanet.space
+#   3. Подставь реальные пути до сертификата ниже
+
+server {
+    listen 443 ssl;
+    server_name darkwg-api.jawsofplanet.space;
+
+    ssl_certificate     /etc/letsencrypt/live/darkwg-api.jawsofplanet.space/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/darkwg-api.jawsofplanet.space/privkey.pem;
+
+    # Доступ только с IP финского сервера (бот) — дополнительный слой
+    # помимо X-API-Key, который проверяет сама DarkWG API
+    allow 144.31.182.217;
+    deny all;
+
+    location / {
+        proxy_pass http://127.0.0.1:8765;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+server {
+    listen 80;
+    server_name darkwg-api.jawsofplanet.space;
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}

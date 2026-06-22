@@ -80,7 +80,7 @@ class PeerStore:
     def get(self, peer_id: int) -> Peer | None:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM peers WHERE id = ?", (peer_id,)).fetchone()
-            return Peer(**dict(row)) if row else None
+            return self._row_to_peer(row) if row else None
 
     def get_by_telegram_id(self, telegram_user_id: int) -> list[Peer]:
         with self._connect() as conn:
@@ -88,12 +88,18 @@ class PeerStore:
                 "SELECT * FROM peers WHERE telegram_user_id = ? ORDER BY created_at DESC",
                 (telegram_user_id,),
             ).fetchall()
-            return [Peer(**dict(r)) for r in rows]
+            return [self._row_to_peer(r) for r in rows]
 
     def list_all(self) -> list[Peer]:
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM peers ORDER BY created_at DESC").fetchall()
-            return [Peer(**dict(r)) for r in rows]
+            return [self._row_to_peer(r) for r in rows]
+
+    @staticmethod
+    def _row_to_peer(row: sqlite3.Row) -> Peer:
+        data = dict(row)
+        data["is_active"] = bool(data["is_active"])
+        return Peer(**data)
 
     def used_ips(self) -> set[str]:
         with self._connect() as conn:
@@ -111,3 +117,7 @@ class PeerStore:
     def set_active(self, peer_id: int, is_active: bool) -> None:
         with self._connect() as conn:
             conn.execute("UPDATE peers SET is_active = ? WHERE id = ?", (int(is_active), peer_id))
+
+    def extend_expiry(self, peer_id: int, new_expires_at: str | None) -> None:
+        with self._connect() as conn:
+            conn.execute("UPDATE peers SET expires_at = ? WHERE id = ?", (new_expires_at, peer_id))
