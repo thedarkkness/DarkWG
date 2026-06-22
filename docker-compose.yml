@@ -13,8 +13,8 @@ services:
     volumes:
       - /etc/darkwg:/etc/darkwg
       - darkwg-data:/opt/darkwg/data
-      - __AWG_BIN_PATH__:/usr/local/bin/darkwg:ro
-      - __AWG_QUICK_BIN_PATH__:/usr/local/bin/darkwg-quick:ro
+      - __AWG_BIN_PATH__:/usr/local/bin/awg:ro
+      - __AWG_QUICK_BIN_PATH__:/usr/local/bin/awg-quick:ro
 
   darkwg-nginx:
     image: nginx:1.28

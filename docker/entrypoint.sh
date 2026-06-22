@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# darkwg/darkwg-quick — это смонтированные с хоста бинарники awg/awg-quick
-# (см. volumes в docker-compose.yml), просто под другим именем внутри контейнера.
+# awg/awg-quick — смонтированы с хоста под настоящими именами (см. volumes
+# в docker-compose.yml), потому что сам awg-quick внутри себя вызывает awg
+# по жёсткому имени. darkwg/darkwg-quick — симлинки для нашего собственного
+# кода (api/wireguard.py, scripts/darkwg_cli.py), создаём их здесь же.
+ln -sf /usr/local/bin/awg /usr/local/bin/darkwg
+ln -sf /usr/local/bin/awg-quick /usr/local/bin/darkwg-quick
 
 if ! ip link show darkwg0 &>/dev/null; then
   echo "[entrypoint] поднимаю интерфейс darkwg0"
