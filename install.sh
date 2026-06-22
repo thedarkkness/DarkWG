@@ -41,7 +41,7 @@ trap 'on_error ${LINENO}' ERR
 
 REPO_URL="https://github.com/thedarkkness/DarkWG.git"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="1.0.1"
 SCRIPT_AUTHOR="thedarkkness"
 
 # Если рядом со скриптом нет остальных файлов репозитория (Dockerfile и т.п.) —
@@ -116,6 +116,65 @@ print_bye_and_exit() {
   exit 0
 }
 
+uninstall_darkwg() {
+  echo ""
+  echo -e "${RED}ВНИМАНИЕ:${NC} это безвозвратно удалит:"
+  echo "  - контейнеры darkwg и darkwg-nginx (если есть)"
+  echo "  - Docker-образ и volume с базой данных пиров — все уже выданные"
+  echo "    клиентам конфиги перестанут работать навсегда"
+  echo "  - интерфейс тоннеля darkwg0 и связанные правила iptables/ufw"
+  echo "  - всю папку /etc/darkwg целиком (ключи сервера, конфиги, обфускация)"
+  echo ""
+  echo "Системный пакет amneziawg-tools и kernel-модуль НЕ удаляются."
+  echo ""
+  read -rp "Точно удалить всё безвозвратно? [y/N]: " confirm_ans
+  if [[ "${confirm_ans,,}" != "y" ]]; then
+    echo "Отменено, ничего не тронул."
+    print_bye_and_exit
+  fi
+
+  echo ""
+  echo "Удаляю..."
+
+  OLD_PORT=""
+  if [[ -f "/etc/darkwg/darkwg0.conf" ]]; then
+    OLD_PORT="$(grep -E '^ListenPort' /etc/darkwg/darkwg0.conf | awk -F'= ' '{print $2}' || true)"
+  fi
+
+  docker rm -f darkwg darkwg-nginx 2>/dev/null || true
+
+  # образы из временных клонов называются вида tmpXXXXX-darkwg
+  docker images --format '{{.Repository}}:{{.ID}}' 2>/dev/null \
+    | grep -- '-darkwg:' | awk -F: '{print $2}' \
+    | xargs -r docker rmi -f 2>/dev/null || true
+
+  # имя volume зависит от папки временного клона — чистим по маске
+  docker volume ls -q 2>/dev/null | grep -- 'darkwg-data' \
+    | xargs -r docker volume rm -f 2>/dev/null || true
+
+  docker network ls -q --filter name=darkwg 2>/dev/null \
+    | xargs -r docker network rm 2>/dev/null || true
+
+  if ip link show darkwg0 &>/dev/null; then
+    if [[ -f "/etc/darkwg/darkwg0.conf" ]]; then
+      darkwg-quick down /etc/darkwg/darkwg0.conf 2>/dev/null || ip link delete dev darkwg0 2>/dev/null || true
+    else
+      ip link delete dev darkwg0 2>/dev/null || true
+    fi
+  fi
+
+  if [[ -n "${OLD_PORT}" ]]; then
+    ufw delete allow "${OLD_PORT}/udp" 2>/dev/null || true
+  fi
+
+  rm -f /usr/local/bin/darkwg /usr/local/bin/darkwg-quick
+  rm -f /etc/sysctl.d/99-darkwg.conf
+  rm -rf /etc/darkwg
+
+  ok "DarkWG полностью удалён"
+  print_bye_and_exit
+}
+
 # Если DARKWG_MODE задан через переменную окружения — считаем, что это
 # автоматический/скриптовый запуск, и пропускаем мастер целиком (без
 # навигации назад — она нужна только для интерактивного режима).
@@ -135,12 +194,14 @@ else
         echo ""
         echo "  1. Панель + нода (туннель и API в одном месте, бот можно подключать локально)"
         echo "  2. Только нода (без панели — управление с отдельного сервера по HTTPS)"
+        echo "  3. Удалить DarkWG полностью (контейнеры, данные, тоннель)"
         echo "  0. Выход"
         echo ""
-        read -rp "Выбери [1/2/0]: " ans
+        read -rp "Выбери [1/2/3/0]: " ans
         case "${ans}" in
           1) DARKWG_MODE="1"; step="endpoint" ;;
           2) DARKWG_MODE="2"; step="endpoint" ;;
+          3) uninstall_darkwg ;;
           0) print_bye_and_exit ;;
           *) echo "Не понял, попробуй снова" ;;
         esac
