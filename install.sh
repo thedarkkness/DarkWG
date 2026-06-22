@@ -22,7 +22,7 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-ok()   { echo -e "${GREEN}✓${NC} $1"; }
+ok()   { echo -e "${GREEN}☑${NC} $1"; }
 warn() { echo -e "${YELLOW}!${NC} $1"; }
 fail() { echo -e "${RED}✗ ОШИБКА${NC}: $1" >&2; }
 step() { echo -e "${CYAN}==> $1${NC}"; }
@@ -212,6 +212,7 @@ if ! command -v docker &>/dev/null; then
   apt-get install -y -qq docker.io docker-compose-plugin
   systemctl enable --now docker
 fi
+ok "Зависимости установлены"
 
 step "2/8: ставлю тоннельный модуль и инструменты ядра"
 if ! grep -rq "amnezia/ppa" /etc/apt/sources.list.d/ 2>/dev/null; then
@@ -241,10 +242,12 @@ if ! AWG_QUICK_BIN_PATH="$(command -v awg-quick)"; then
 fi
 ln -sf "${AWG_BIN_PATH}" /usr/local/bin/darkwg
 ln -sf "${AWG_QUICK_BIN_PATH}" /usr/local/bin/darkwg-quick
+ok "Модуль и инструменты установлены"
 
 step "3/8: определяю сетевой интерфейс для NAT"
 EGRESS_IFACE="$(ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if ($i=="dev") print $(i+1)}')"
 echo "    интерфейс выхода в интернет: ${EGRESS_IFACE}"
+ok "Интерфейс определён: ${EGRESS_IFACE}"
 
 step "4/8: проверяю, что net.ipv4.ip_forward включён постоянно"
 SYSCTL_FILE="/etc/sysctl.d/99-darkwg.conf"
@@ -257,6 +260,7 @@ if [[ "${CURRENT_FORWARD}" != "1" || "${PERSISTED}" != "net.ipv4.ip_forward=1" ]
 else
   echo "    уже включено и закреплено постоянно — пропускаю"
 fi
+ok "ip_forward в порядке"
 
 step "5/8: генерирую ключи, обфускационные параметры и конфиг туннеля"
 mkdir -p "${CONFIG_DIR}" "${PEERS_DIR}"
@@ -297,6 +301,7 @@ PostDown = iptables -D FORWARD -i ${IFACE} -j ACCEPT; iptables -t nat -D POSTROU
 EOF
 chmod 600 "${CONFIG_DIR}/${IFACE}.conf"
 ufw allow "${PORT}/udp" || true
+ok "Ключи и конфиг туннеля готовы"
 
 step "6/8: пишу api.env и docker-compose.yml"
 API_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
@@ -327,6 +332,7 @@ sed -e "s#__AWG_BIN_PATH__#${AWG_BIN_PATH}#g" \
     "${REPO_DIR}/docker-compose.yml" > "${REPO_DIR}/docker-compose.generated.yml"
 
 touch "${REPO_DIR}/nginx/darkwg-api.conf"  # пустышка, чтобы volume в compose был валиден даже в режиме 1
+ok "api.env и docker-compose.yml готовы"
 
 # ----------------------------------------------------------------------------
 # Шаг 7: внешний HTTPS-доступ к API (только режим 2) — HTTP-01 (standalone)
@@ -403,8 +409,10 @@ if [[ "${DARKWG_MODE}" == "2" ]]; then
 
   COMPOSE_PROFILE_ARGS=(--profile external)
   API_PUBLIC_URL="https://${DARKWG_API_DOMAIN}:${HTTPS_PORT}"
+  ok "Внешний HTTPS-доступ настроен"
 else
   step "7/8: режим 1 — внешний доступ к API не настраивается, всё локально"
+  ok "Пропущено (не нужно в этом режиме)"
 fi
 
 # ----------------------------------------------------------------------------
@@ -416,6 +424,7 @@ else
   step "8/8: собираю и поднимаю контейнер darkwg"
 fi
 cd "${REPO_DIR}"
+docker rm -f darkwg darkwg-nginx 2>/dev/null || true
 docker compose -f docker-compose.generated.yml "${COMPOSE_PROFILE_ARGS[@]}" build darkwg
 docker compose -f docker-compose.generated.yml "${COMPOSE_PROFILE_ARGS[@]}" up -d
 ok "Образ собран, контейнеры запущены"
