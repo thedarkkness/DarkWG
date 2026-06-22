@@ -19,7 +19,6 @@ CONFIG_DIR="/etc/darkwg"
 PEERS_DIR="${CONFIG_DIR}/peers"
 IFACE="darkwg0"
 
-PORT="${DARKWG_PORT:-$(shuf -i 20000-60000 -n 1)}"
 SUBNET="${DARKWG_SUBNET:-10.13.0.0/16}"
 SERVER_IP="10.13.0.1"
 
@@ -28,45 +27,136 @@ port_in_use() {
 }
 
 # ----------------------------------------------------------------------------
-# Шаг 0: режим установки и вопросы
+# Шаг 0: режим установки и вопросы — интерактивный мастер с возвратом назад
 # ----------------------------------------------------------------------------
-echo ""
-echo "Как ставим?"
-echo "  1) Всё на этом сервере — туннель и управление (бот/API) в одном месте"
-echo "  2) Эта нода отдельно от сервера управления — нужен внешний HTTPS-доступ"
-echo "     к API для бота/панели, которые работают на другом сервере"
-echo ""
-if [[ -z "${DARKWG_MODE:-}" ]]; then
-  read -rp "Выбери 1 или 2: " DARKWG_MODE
+print_bye_and_exit() {
+  echo ""
+  echo "Bye!"
+  exit 0
+}
+
+# Если DARKWG_MODE задан через переменную окружения — считаем, что это
+# автоматический/скриптовый запуск, и пропускаем мастер целиком (без
+# навигации назад — она нужна только для интерактивного режима).
+if [[ -n "${DARKWG_MODE:-}" ]]; then
+  if [[ -z "${DARKWG_ENDPOINT:-}" ]]; then
+    DETECTED_IP="$(curl -s --max-time 3 -4 ifconfig.me || true)"
+    DARKWG_ENDPOINT="${DETECTED_IP}"
+  fi
+  DARKWG_PORT="${DARKWG_PORT:-443}"
+else
+  step="mode"
+  while true; do
+    case "${step}" in
+      mode)
+        echo ""
+        echo "Как ставим?"
+        echo "  1) Всё на этом сервере — туннель и управление (бот/API) в одном месте"
+        echo "  2) Эта нода отдельно от сервера управления — нужен внешний HTTPS-доступ"
+        echo "     к API для бота/панели, которые работают на другом сервере"
+        echo "  0) Выход"
+        read -rp "Выбери [1/2/0]: " ans
+        case "${ans}" in
+          1) DARKWG_MODE="1"; step="endpoint" ;;
+          2) DARKWG_MODE="2"; step="endpoint" ;;
+          0) print_bye_and_exit ;;
+          *) echo "Не понял, попробуй снова" ;;
+        esac
+        ;;
+
+      endpoint)
+        echo ""
+        echo "Нужен публичный IP-адрес или домен этого сервера — именно по нему"
+        echo "будут подключаться клиенты тоннеля."
+        DETECTED_IP="$(curl -s --max-time 3 -4 ifconfig.me || true)"
+        if [[ -n "${DETECTED_IP}" ]]; then
+          read -rp "IP или домен сервера [${DETECTED_IP}, Enter = по умолчанию, 0 = назад]: " ans
+        else
+          read -rp "IP-адрес или домен сервера [0 = назад]: " ans
+        fi
+        if [[ "${ans}" == "0" ]]; then
+          step="mode"; continue
+        fi
+        DARKWG_ENDPOINT="${ans:-${DETECTED_IP}}"
+        if [[ -z "${DARKWG_ENDPOINT}" ]]; then
+          echo "Не определился IP автоматически — введи вручную"
+          continue
+        fi
+        step="port"
+        ;;
+
+      port)
+        echo ""
+        echo "Какой порт использовать для тоннеля?"
+        echo "443/udp — рекомендуемый вариант: некоторые операторы блокируют"
+        echo "UDP на нестандартных высоких портах, а 443 обычно проходит,"
+        echo "так как массово используется легитимным QUIC-трафиком."
+        read -rp "Порт [443, Enter = по умолчанию, 0 = назад]: " ans
+        if [[ "${ans}" == "0" ]]; then
+          step="endpoint"; continue
+        fi
+        DARKWG_PORT="${ans:-443}"
+        if ! [[ "${DARKWG_PORT}" =~ ^[0-9]+$ ]] || (( DARKWG_PORT < 1 || DARKWG_PORT > 65535 )); then
+          echo "Это не похоже на корректный номер порта (1-65535), попробуй снова"
+          continue
+        fi
+        if [[ "${DARKWG_MODE}" == "2" ]]; then
+          step="api_domain"
+        else
+          step="done"
+        fi
+        ;;
+
+      api_domain)
+        echo ""
+        echo "Домен для API этой ноды (например, darkwg-api.example.com)."
+        read -rp "Домен [0 = назад]: " ans
+        if [[ "${ans}" == "0" ]]; then
+          step="port"; continue
+        fi
+        if [[ -z "${ans}" ]]; then
+          echo "Домен не может быть пустым"
+          continue
+        fi
+        DARKWG_API_DOMAIN="${ans}"
+        step="control_ip"
+        ;;
+
+      control_ip)
+        echo ""
+        echo "IP сервера управления (бота/панели) — доступ к API будет"
+        echo "ограничен только этим IP."
+        read -rp "IP сервера управления [0 = назад]: " ans
+        if [[ "${ans}" == "0" ]]; then
+          step="api_domain"; continue
+        fi
+        if [[ -z "${ans}" ]]; then
+          echo "IP не может быть пустым"
+          continue
+        fi
+        DARKWG_CONTROL_IP="${ans}"
+        step="acme_email"
+        ;;
+
+      acme_email)
+        echo ""
+        read -rp "Email для уведомлений Let's Encrypt [можно пусто, 0 = назад]: " ans
+        if [[ "${ans}" == "0" ]]; then
+          step="control_ip"; continue
+        fi
+        DARKWG_ACME_EMAIL="${ans}"
+        step="done"
+        ;;
+
+      done)
+        break
+        ;;
+    esac
+  done
 fi
 
-if [[ -z "${DARKWG_ENDPOINT:-}" ]]; then
-  echo ""
-  echo "Нужен публичный IP-адрес или домен этого сервера — именно по нему"
-  echo "будут подключаться клиенты тоннеля."
-  DETECTED_IP="$(curl -s --max-time 3 -4 ifconfig.me || true)"
-  if [[ -n "${DETECTED_IP}" ]]; then
-    read -rp "IP или домен сервера [по умолчанию: ${DETECTED_IP}, просто нажми Enter]: " DARKWG_ENDPOINT
-    DARKWG_ENDPOINT="${DARKWG_ENDPOINT:-${DETECTED_IP}}"
-  else
-    read -rp "IP-адрес или домен сервера: " DARKWG_ENDPOINT
-  fi
-fi
+PORT="${DARKWG_PORT}"
 
-if [[ "${DARKWG_MODE}" == "2" ]]; then
-  echo ""
-  echo "Режим 2: нужен домен для API этой ноды и IP сервера управления"
-  echo "(бота/панели) — доступ к API будет ограничен только этим IP."
-  if [[ -z "${DARKWG_API_DOMAIN:-}" ]]; then
-    read -rp "Домен для API этой ноды (например, darkwg-api.example.com): " DARKWG_API_DOMAIN
-  fi
-  if [[ -z "${DARKWG_CONTROL_IP:-}" ]]; then
-    read -rp "IP сервера управления (бота/панели): " DARKWG_CONTROL_IP
-  fi
-  if [[ -z "${DARKWG_ACME_EMAIL:-}" ]]; then
-    read -rp "Email для уведомлений Let's Encrypt (можно оставить пустым): " DARKWG_ACME_EMAIL
-  fi
-fi
 
 # ----------------------------------------------------------------------------
 # Шаг 1: системные зависимости (без python3-venv/pip — API теперь в контейнере)
@@ -320,4 +410,4 @@ if [[ -n "${API_PUBLIC_URL}" ]]; then
 else
   echo "  Проверка API: curl -s -H \"X-API-Key: ${API_KEY}\" http://127.0.0.1:8765/health"
 fi
-echo "===================================================================="
+echo "====================================================================" 
