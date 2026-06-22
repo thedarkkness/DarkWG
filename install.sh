@@ -6,6 +6,8 @@
 #
 # Использование:
 #   sudo ./install.sh
+#   (или одной командой без предварительного git clone:)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/thedarkkness/DarkWG/main/install.sh)
 
 set -euo pipefail
 
@@ -14,7 +16,21 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
+REPO_URL="https://github.com/thedarkkness/DarkWG.git"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Если рядом со скриптом нет остальных файлов репозитория (Dockerfile и т.п.) —
+# значит, скрипт запущен напрямую через curl|bash / bash <(curl ...), а не из
+# полного git clone. В этом случае клонируем репозиторий во временную папку
+# и перезапускаем install.sh уже оттуда, где все нужные файлы рядом.
+if [[ ! -f "${REPO_DIR}/docker/Dockerfile" ]]; then
+  echo "Скрипт запущен напрямую — клонирую полный репозиторий во временную папку..."
+  command -v git &>/dev/null || { apt-get update -qq && apt-get install -y -qq git; }
+  TMP_CLONE_DIR="$(mktemp -d)"
+  git clone --quiet "${REPO_URL}" "${TMP_CLONE_DIR}"
+  exec bash "${TMP_CLONE_DIR}/install.sh" "$@"
+fi
+
 CONFIG_DIR="/etc/darkwg"
 PEERS_DIR="${CONFIG_DIR}/peers"
 IFACE="darkwg0"
@@ -410,4 +426,4 @@ if [[ -n "${API_PUBLIC_URL}" ]]; then
 else
   echo "  Проверка API: curl -s -H \"X-API-Key: ${API_KEY}\" http://127.0.0.1:8765/health"
 fi
-echo "====================================================================" 
+echo "===================================================================="
