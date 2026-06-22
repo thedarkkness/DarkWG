@@ -41,7 +41,7 @@ trap 'on_error ${LINENO}' ERR
 
 REPO_URL="https://github.com/thedarkkness/DarkWG.git"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPT_VERSION="1.0.6"
+SCRIPT_VERSION="1.0.7"
 SCRIPT_AUTHOR="thedarkkness"
 
 # Если рядом со скриптом нет остальных файлов репозитория (Dockerfile и т.п.) —

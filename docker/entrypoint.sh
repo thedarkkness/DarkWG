@@ -22,4 +22,11 @@ echo "[entrypoint] поднимаю интерфейс darkwg0"
 darkwg-quick up /etc/darkwg/darkwg0.conf
 
 echo "[entrypoint] запускаю API"
+for i in $(seq 1 10); do
+  if ! ss -tln 2>/dev/null | grep -q ':8765 '; then
+    break
+  fi
+  echo "[entrypoint] порт 8765 ещё занят (вероятно, прошлый процесс не успел освободиться) — жду..."
+  sleep 1
+done
 exec python3 -m uvicorn api.main:app --host 127.0.0.1 --port 8765

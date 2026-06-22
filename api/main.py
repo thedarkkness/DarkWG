@@ -68,8 +68,27 @@ async def _expiry_sweep_loop() -> None:
         await asyncio.sleep(EXPIRY_CHECK_INTERVAL_SECONDS)
 
 
+def _resync_peers_to_interface() -> None:
+    """Заново накатывает всех активных пиров из БД на интерфейс.
+
+    Нужно, потому что entrypoint.sh при каждом старте контейнера пересобирает
+    darkwg0 с нуля из статического конфига (в котором нет [Peer] секций —
+    пиры живут только в БД и добавляются на лету через awg set). Без этого
+    шага пиры пропадали бы с реального интерфейса при каждом перезапуске
+    контейнера, даже если в БД они оставались активными.
+    """
+    for peer in store.list_all():
+        if not peer.is_active:
+            continue
+        try:
+            wireguard.add_peer(IFACE, peer.public_key, peer.ip_address)
+        except wireguard.WireGuardError:
+            pass
+
+
 @app.on_event("startup")
 async def _start_expiry_sweep() -> None:
+    _resync_peers_to_interface()
     asyncio.create_task(_expiry_sweep_loop())
 
 
