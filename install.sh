@@ -41,6 +41,8 @@ trap 'on_error ${LINENO}' ERR
 
 REPO_URL="https://github.com/thedarkkness/DarkWG.git"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_VERSION="1.0.0"
+SCRIPT_AUTHOR="thedarkkness"
 
 # Если рядом со скриптом нет остальных файлов репозитория (Dockerfile и т.п.) —
 # значит, скрипт запущен напрямую через curl|bash / bash <(curl ...), а не из
@@ -53,7 +55,46 @@ if [[ ! -f "${REPO_DIR}/docker/Dockerfile" ]]; then
   exec bash "${TMP_CLONE_DIR}/install.sh" "$@"
 fi
 
+print_banner() {
+  local c1='\033[38;5;52m'
+  local c2='\033[38;5;88m'
+  local c3='\033[38;5;124m'
+  local c4='\033[38;5;160m'
+  echo -e "${c1}▛▀▖▞▀▖▛▀▖▌ ▌▌ ▌▞▀▖${NC}"
+  echo -e "${c2}▌ ▌▙▄▌▙▄▘▙▞ ▌▖▌▌▄▖${NC}"
+  echo -e "${c3}▌ ▌▌ ▌▌▚ ▌▝▖▙▚▌▌ ▌${NC}"
+  echo -e "${c4}▀▀ ▘ ▘▘ ▘▘ ▘▘ ▘▝▀ ${NC}"
+  echo -e "  ${YELLOW}by ${SCRIPT_AUTHOR} · v${SCRIPT_VERSION}${NC}"
+  echo ""
+}
+
+check_for_updates() {
+  local remote_version
+  remote_version="$(curl -s --max-time 3 "https://raw.githubusercontent.com/thedarkkness/DarkWG/main/VERSION" 2>/dev/null | tr -d '[:space:]')"
+  if [[ -z "${remote_version}" || "${remote_version}" == "${SCRIPT_VERSION}" ]]; then
+    return 0
+  fi
+  warn "Доступна новая версия скрипта: ${remote_version} (у тебя ${SCRIPT_VERSION})"
+  read -rp "Обновить и перезапустить? [y/N]: " update_ans
+  if [[ "${update_ans,,}" != "y" ]]; then
+    echo ""
+    return 0
+  fi
+  echo "Обновляюсь..."
+  if [[ -d "${REPO_DIR}/.git" ]]; then
+    git -C "${REPO_DIR}" pull --quiet
+    exec bash "${REPO_DIR}/install.sh" "$@"
+  else
+    local tmp_dir
+    tmp_dir="$(mktemp -d)"
+    git clone --quiet "${REPO_URL}" "${tmp_dir}" &>/dev/null
+    exec bash "${tmp_dir}/install.sh" "$@"
+  fi
+}
+
 clear
+print_banner
+check_for_updates "$@"
 
 CONFIG_DIR="/etc/darkwg"
 PEERS_DIR="${CONFIG_DIR}/peers"
@@ -202,13 +243,6 @@ PORT="${DARKWG_PORT}"
 # ----------------------------------------------------------------------------
 # Шаг 1: системные зависимости (без python3-venv/pip — API теперь в контейнере)
 # ----------------------------------------------------------------------------
-AVAILABLE_MB="$(free -m | awk '/^Mem:/{print $7}')"
-if [[ -n "${AVAILABLE_MB}" ]] && (( AVAILABLE_MB < 400 )); then
-  warn "свободной памяти всего ${AVAILABLE_MB} МБ — если на сервере уже"
-  warn "крутится что-то тяжёлое (база данных, другие контейнеры), сборка"
-  warn "образа и работа контейнера darkwg могут падать из-за нехватки RAM."
-fi
-
 step "1/8: устанавливаю системные зависимости"
 apt-get update -qq
 apt-get install -y -qq \
@@ -305,7 +339,7 @@ H1 = ${H1}
 H2 = ${H2}
 H3 = ${H3}
 H4 = ${H4}
-PostUp = sysctl -w net.ipv4.ip_forward=1; iptables -A FORWARD -i ${IFACE} -j ACCEPT; iptables -t nat -A POSTROUTING -o ${EGRESS_IFACE} -j MASQUERADE
+PostUp = iptables -A FORWARD -i ${IFACE} -j ACCEPT; iptables -t nat -A POSTROUTING -o ${EGRESS_IFACE} -j MASQUERADE
 PostDown = iptables -D FORWARD -i ${IFACE} -j ACCEPT; iptables -t nat -D POSTROUTING -o ${EGRESS_IFACE} -j MASQUERADE
 EOF
 chmod 600 "${CONFIG_DIR}/${IFACE}.conf"
@@ -455,7 +489,7 @@ show_container_diagnostics() {
   docker compose -f docker-compose.generated.yml logs darkwg --tail 40 2>&1 | tail -40 >&2 || true
   echo "----------------------------------------" >&2
   echo "" >&2
-  echo "Память на сервере (мало свободной — частая причина перезапуска контейнера):" >&2
+  echo "Память на сервере:" >&2
   free -h >&2 || true
   echo "" >&2
   echo "Статус контейнера:" >&2
