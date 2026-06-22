@@ -207,8 +207,15 @@ if ! lsmod | grep -q amneziawg; then
   }
 fi
 
-AWG_BIN_PATH="$(command -v awg)"
-AWG_QUICK_BIN_PATH="$(command -v awg-quick)"
+if ! AWG_BIN_PATH="$(command -v awg)"; then
+  echo "ОШИБКА: бинарь 'awg' не найден после установки amneziawg-tools." >&2
+  echo "Проверь: dpkg -l | grep amneziawg" >&2
+  exit 1
+fi
+if ! AWG_QUICK_BIN_PATH="$(command -v awg-quick)"; then
+  echo "ОШИБКА: бинарь 'awg-quick' не найден после установки amneziawg-tools." >&2
+  exit 1
+fi
 ln -sf "${AWG_BIN_PATH}" /usr/local/bin/darkwg
 ln -sf "${AWG_QUICK_BIN_PATH}" /usr/local/bin/darkwg-quick
 
@@ -219,7 +226,7 @@ echo "    интерфейс выхода в интернет: ${EGRESS_IFACE}"
 echo "==> 4/8: проверяю, что net.ipv4.ip_forward включён постоянно"
 SYSCTL_FILE="/etc/sysctl.d/99-darkwg.conf"
 CURRENT_FORWARD="$(sysctl -n net.ipv4.ip_forward)"
-PERSISTED="$(grep -rhs '^net.ipv4.ip_forward' /etc/sysctl.conf /etc/sysctl.d/*.conf 2>/dev/null | tail -n1)"
+PERSISTED="$(grep -rhs '^net.ipv4.ip_forward' /etc/sysctl.conf /etc/sysctl.d/*.conf 2>/dev/null | tail -n1 || true)"
 if [[ "${CURRENT_FORWARD}" != "1" || "${PERSISTED}" != "net.ipv4.ip_forward=1" ]]; then
   echo "net.ipv4.ip_forward=1" > "${SYSCTL_FILE}"
   sysctl -p "${SYSCTL_FILE}" > /dev/null
