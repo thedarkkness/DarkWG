@@ -41,7 +41,7 @@ trap 'on_error ${LINENO}' ERR
 
 REPO_URL="https://github.com/thedarkkness/DarkWG.git"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPT_VERSION="1.0.3"
+SCRIPT_VERSION="1.0.4"
 SCRIPT_AUTHOR="thedarkkness"
 
 # Если рядом со скриптом нет остальных файлов репозитория (Dockerfile и т.п.) —
@@ -84,12 +84,21 @@ version_gt() {
   return 1
 }
 
-check_for_updates() {
+do_update_check() {
+  local verbose="${1:-silent}"
   local remote_version
   remote_version="$(curl -s --max-time 3 "https://raw.githubusercontent.com/thedarkkness/DarkWG/main/VERSION" 2>/dev/null | tr -d '[:space:]')"
-  if [[ -z "${remote_version}" ]] || ! version_gt "${remote_version}" "${SCRIPT_VERSION}"; then
+
+  if [[ -z "${remote_version}" ]]; then
+    [[ "${verbose}" == "verbose" ]] && fail "не удалось получить версию с GitHub (нет сети или сервер недоступен)"
     return 0
   fi
+
+  if ! version_gt "${remote_version}" "${SCRIPT_VERSION}"; then
+    [[ "${verbose}" == "verbose" ]] && ok "У тебя последняя версия (v${SCRIPT_VERSION})"
+    return 0
+  fi
+
   warn "Доступна новая версия скрипта: ${remote_version} (у тебя ${SCRIPT_VERSION})"
   read -rp "Обновить и перезапустить? [y/N]: " update_ans
   if [[ "${update_ans,,}" != "y" ]]; then
@@ -99,18 +108,18 @@ check_for_updates() {
   echo "Обновляюсь..."
   if [[ -d "${REPO_DIR}/.git" ]]; then
     git -C "${REPO_DIR}" pull --quiet
-    exec bash "${REPO_DIR}/install.sh" "$@"
+    exec bash "${REPO_DIR}/install.sh"
   else
     local tmp_dir
     tmp_dir="$(mktemp -d)"
     git clone --quiet "${REPO_URL}" "${tmp_dir}" &>/dev/null
-    exec bash "${tmp_dir}/install.sh" "$@"
+    exec bash "${tmp_dir}/install.sh"
   fi
 }
 
 clear
 print_banner
-check_for_updates "$@"
+do_update_check "silent"
 
 CONFIG_DIR="/etc/darkwg"
 PEERS_DIR="${CONFIG_DIR}/peers"
@@ -211,13 +220,15 @@ else
         echo "  1. Панель + нода (туннель и API в одном месте, бот можно подключать локально)"
         echo "  2. Только нода (без панели — управление с отдельного сервера по HTTPS)"
         echo "  3. Удалить DarkWG полностью (контейнеры, данные, тоннель)"
+        echo "  4. Проверить обновления"
         echo "  0. Выход"
         echo ""
-        read -rp "Выбери [1/2/3/0]: " ans
+        read -rp "Выбери [1/2/3/4/0]: " ans
         case "${ans}" in
           1) DARKWG_MODE="1"; step="endpoint" ;;
           2) DARKWG_MODE="2"; step="endpoint" ;;
           3) uninstall_darkwg ;;
+          4) echo ""; echo "Проверяю обновления..."; do_update_check "verbose" ;;
           0) print_bye_and_exit ;;
           *) echo "Не понял, попробуй снова" ;;
         esac
